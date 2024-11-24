@@ -1,57 +1,75 @@
-import { Address, toNano } from '@ton/core';
-import { JettonMinter, JettonMinterContent, jettonContentToCell, jettonMinterConfigToCell } from '../wrappers/JettonMinter';
-import { compile, NetworkProvider, UIProvider} from '@ton/blueprint';
-import { promptAddress, promptBool, promptUrl } from '../wrappers/ui-utils';
+const { TonClient, abi } = require("@tonclient/core");
+const { libNode } = require("@tonclient/lib-node");
+TonClient.useBinaryLibrary(libNode);
+const bip39 = require("bip39");
+const hdkey = require("ethereumjs-wallet/hdkey");
+const { toHex } = require("web3-utils");
 
-const formatUrl = "https://github.com/ton-blockchain/TEPs/blob/master/text/0064-token-data-standard.md#jetton-metadata-example-offchain";
-const exampleContent = {
-                          "name": "Sample Jetton",
-                          "description": "Sample of Jetton",
-                          "symbol": "JTN",
-                          "decimals": 0,
-                          "image": "https://www.svgrepo.com/download/483336/coin-vector.svg"
-                       };
-const urlPrompt = 'Please specify url pointing to jetton metadata(json):';
-
-export async function run(provider: NetworkProvider) {
-    const ui       = provider.ui();
-    const sender   = provider.sender();
-    const adminPrompt = `Please specify admin address`;
-    ui.write(`Jetton deployer\nCurrent deployer onli supports off-chain format:${formatUrl}`);
-
-    let admin      = await promptAddress(adminPrompt, ui, sender.address);
-    ui.write(`Admin address:${admin}\n`);
-    let contentUrl = await promptUrl(urlPrompt, ui);
-    ui.write(`Jetton content url:${contentUrl}`);
-
-    let dataCorrect = false;
-    do {
-        ui.write("Please verify data:\n")
-        ui.write(`Admin:${admin}\n\n`);
-        ui.write('Metadata url:' + contentUrl);
-        dataCorrect = await promptBool('Is everything ok?(y/n)', ['y','n'], ui);
-        if(!dataCorrect) {
-            const upd = await ui.choose('What do you want to update?', ['Admin', 'Url'], (c) => c);
-
-            if(upd == 'Admin') {
-                admin = await promptAddress(adminPrompt, ui, sender.address);
-            }
-            else {
-                contentUrl = await promptUrl(urlPrompt, ui);
-            }
+const setupWallet = async () => {
+    const client = new TonClient({
+        network: {
+            endpoints: ["https://toncenter.com/api/v2/jsonRPC"]
         }
+    });
 
-    } while(!dataCorrect);
+    const walletAddress = "EQA_gft901TRFYjWatkOSpFM0bB0EJuqGst9Akz5iYSdJYbj"; // Your wallet address
+    const seedPhrase = "kingdom hungry number apple plug borrow flame dose broken reject roof worry gallery gaze cost mind similar stool retire nephew unable prize involve slim"; // 24-word seed phrase
 
-    const content = jettonContentToCell({type:1,uri:contentUrl});
+    // Derive keys from seed phrase
+    const seed = bip39.mnemonicToSeedSync(seedPhrase);
+    const hdWallet = hdkey.fromMasterSeed(seed);
+    const wallet = hdWallet.derivePath(`m/44'/60'/0'/0/0`).getWallet();
+    const publicKey = toHex(wallet.getPublicKey());
+    const secretKey = toHex(wallet.getPrivateKey());
 
-    const wallet_code = await compile('JettonWallet');
+    const callSet = {
+        function_name: "setWalletType",
+        input: {
+            new_wallet_type: "wallet_v3R2"
+        }
+    };
 
-    const minter  = JettonMinter.createFromConfig({admin,
-                                                  content,
-                                                  wallet_code,
-                                                  }, 
-                                                  await compile('JettonMinter'));
+    const signer = {
+        type: "Keys",
+        keys: {
+            public: publicKey,
+            secret: secretKey
+        }
+    };
 
-    await provider.deploy(minter, toNano('0.05'));
-}
+    try {
+        const { message } = await client.abi.encode_message({
+            address: walletAddress,
+            call_set: callSet,
+            signer: signer,
+            abi: {
+                type: "Contract",
+                value: {
+                    "ABI version": 2,
+                    header: ["time", "expire"],
+                    functions: [
+                        {
+                            name: "setWalletType",
+                            inputs: [
+                                { name: "new_wallet_type", type: "string" }
+                            ],
+                            outputs: []
+                        }
+                    ],
+                    data: [],
+                    events: []
+                }
+            }
+        });
+
+        await client.processing.send_message({
+            message,
+            send_events: false
+        });
+        console.log("Wallet type successfully updated to v3R2");
+    } catch (error) {
+        console.error("Error updating wallet type:", error);
+    }
+};
+
+setupWallet();
